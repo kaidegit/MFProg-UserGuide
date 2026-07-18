@@ -1,3 +1,5 @@
+**中文** | [English](UserManual-MFProg_Lite_E0.en.md)
+
 # MFProg Lite E0 使用说明书
 
 > 一款适用于 ESP32 系列芯片烧录固件的便携设备。
