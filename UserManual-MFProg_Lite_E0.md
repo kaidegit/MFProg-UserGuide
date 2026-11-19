@@ -173,7 +173,7 @@ MFProg-ESP-fw-tool -i "[(0x0, bootloader.bin), (0x10000, app.bin)]" -o <output_f
 使用注意事项：
 
 - **无二次确认**：手动模式选中项目即按配置烧录，请确保工程配置正确；
-- **幂等**：要烧的位已全部烧过则自动跳过，同一块板重复烧录同一工程不会报错。
+- **有限幂等**：仅对未被写保护的块成立——要烧的位已全部烧过则自动跳过。注意设备**先检查写保护、再检查是否已烧过**，因此一旦块被 `WR_DIS` 写保护（如下文示例中的密钥块），重复烧录同一工程会因写保护检查而报错。需要对同一批板子重复烧录或升级固件时，请在工程包中去掉整个 `efuse` 段。
 - 字节序与 `espefuse burn_block_data` 一致：字节 `[4i..4i+3]` 组成块内第 i 个 32 位字（小端）。
 - RS 编码块（ESP32-S2/S3/C3 等新款芯片的非 BLOCK0 块）**不允许向非空块追加数据**；ESP32 的 3/4 编码块按 6 字节分组判定冲突。已被写保护（WR_DIS）的块会被拒绝并报错。
 - 烧录顺序由设备强制保证：先非 BLOCK0 块，再 BLOCK0 普通字段，写保护/禁下载等危险字段最后烧。
@@ -222,8 +222,8 @@ MFProg-ESP-fw-tool -i "[(0x0, bootloader.bin), (0x10000, app.bin)]" -o <output_f
          },
          {
            "block": "BLOCK0",
-           "data": "000080000100000000000004000000000000000000000000",
-           "comment": "KEY_PURPOSE_0=XTS_AES_128_KEY; WR_DIS[23]+RD_DIS[0] protect BLOCK_KEY0",
+           "data": "000180000100000000000004000000000000000000000000",
+           "comment": "KEY_PURPOSE_0=XTS_AES_128_KEY; WR_DIS[8] locks KEY_PURPOSE_0; WR_DIS[23]+RD_DIS[0] protect BLOCK_KEY0",
            "burn_after_flash": true
          }
        ]
@@ -231,7 +231,7 @@ MFProg-ESP-fw-tool -i "[(0x0, bootloader.bin), (0x10000, app.bin)]" -o <output_f
    }
    ```
 
-   其中 BLOCK0 项的位图含义（ESP32-S3）：word2 的 `KEY_PURPOSE_0 = 4`（XTS_AES_128_KEY）、word0 bit23 的 `WR_DIS`（写保护 BLOCK_KEY0）、word1 bit0 的 `RD_DIS`（读保护 BLOCK_KEY0）。保护位由设备自动安排在最后烧录。
+   其中 BLOCK0 项的位图含义（ESP32-S3）：word2 的 `KEY_PURPOSE_0 = 4`（XTS_AES_128_KEY）、word0 bit8 的 `WR_DIS`（写保护 KEY_PURPOSE_0 本身，与官方 espefuse `burn_key` 的行为一致）、word0 bit23 的 `WR_DIS`（写保护 BLOCK_KEY0）、word1 bit0 的 `RD_DIS`（读保护 BLOCK_KEY0）。保护位由设备自动安排在最后烧录。
 
 4. 在 ESP-IDF 工程中通过 `menuconfig` → Security features 启用 "Enable flash encryption on boot"，选择开发或量产模式，重新构建固件。
 5. 用本设备正常烧录该工程。首次启动时 bootloader 会对 flash 执行就地加密（大分区可能耗时约一分钟），**期间请勿断电**。

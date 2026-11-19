@@ -173,7 +173,7 @@ Field description:
 Notes:
 
 - **No second confirmation**: in manual mode, selecting a project burns exactly what the configuration specifies — make sure the configuration is correct. The auto loop test (testdl) always skips eFuse burning.
-- **Idempotent**: if all requested bits are already burned, the item is skipped; re-burning the same project on the same board does not raise an error.
+- **Limited idempotency**: only for blocks that are not write-protected — an item whose requested bits are all already burned is skipped. Note that the device checks write protection **before** the already-burned check, so once a block is write-protected via `WR_DIS` (like the key block in the example below), re-burning the same project fails the write-protection check with an error. When re-flashing the same boards or updating firmware, remove the entire `efuse` section from the project package.
 - Byte order matches `espefuse burn_block_data`: bytes `[4i..4i+3]` form block word `i` (little-endian).
 - RS-coded blocks (all non-BLOCK0 blocks on ESP32-S2/S3/C3 and other newer chips) **do not allow appending to a non-empty block**; ESP32's 3/4-coded blocks are checked per 6-byte chunk. Write-protected blocks (WR_DIS) are refused with an error.
 - The device enforces the burn order: non-BLOCK0 blocks first, then ordinary BLOCK0 fields, and protection/download-disabling fields always last.
@@ -222,8 +222,8 @@ This follows Espressif's official guide [Flash Encryption - Using a Host-generat
          },
          {
            "block": "BLOCK0",
-           "data": "000080000100000000000004000000000000000000000000",
-           "comment": "KEY_PURPOSE_0=XTS_AES_128_KEY; WR_DIS[23]+RD_DIS[0] protect BLOCK_KEY0",
+           "data": "000180000100000000000004000000000000000000000000",
+           "comment": "KEY_PURPOSE_0=XTS_AES_128_KEY; WR_DIS[8] locks KEY_PURPOSE_0; WR_DIS[23]+RD_DIS[0] protect BLOCK_KEY0",
            "burn_after_flash": true
          }
        ]
@@ -231,7 +231,7 @@ This follows Espressif's official guide [Flash Encryption - Using a Host-generat
    }
    ```
 
-   Meaning of the BLOCK0 bitmap (ESP32-S3): `KEY_PURPOSE_0 = 4` (XTS_AES_128_KEY) in word2, `WR_DIS` bit 23 in word0 (write-protects BLOCK_KEY0), and `RD_DIS` bit 0 in word1 (read-protects BLOCK_KEY0). The device automatically burns protection bits last.
+   Meaning of the BLOCK0 bitmap (ESP32-S3): `KEY_PURPOSE_0 = 4` (XTS_AES_128_KEY) in word2, `WR_DIS` bit 8 in word0 (write-protects KEY_PURPOSE_0 itself, matching the official espefuse `burn_key` behavior), `WR_DIS` bit 23 in word0 (write-protects BLOCK_KEY0), and `RD_DIS` bit 0 in word1 (read-protects BLOCK_KEY0). The device automatically burns protection bits last.
 
 4. In the ESP-IDF project, enable "Enable flash encryption on boot" via `menuconfig` → Security features, choose development or release mode, and rebuild.
 5. Flash the project with this device as usual. On first boot, the bootloader encrypts the flash in place (may take about a minute for large partitions) — **do not power off during this process**.
