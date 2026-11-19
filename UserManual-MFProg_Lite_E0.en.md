@@ -19,11 +19,12 @@ This device has 16 MB of built-in Flash space, of which about 11 MB can be used 
 
 ### Supported ESP Chips and Download Methods
 
-- Supports ESP32, ESP32-C2, ESP32-C3, ESP32-C5, ESP32-C6, ESP32-C61, ESP32-H2, ESP32-P4, ESP32-S2, ESP32-S3, and ESP8266. More chips will be supported through OTA updates.
+- Supports ESP32, ESP32-C2, ESP32-C3, ESP32-C5, ESP32-C6, ESP32-C61, ESP32-H2, ESP32-H21, ESP32-H4, ESP32-P4, ESP32-S2, ESP32-S3, ESP32-S31, and ESP8266. More chips will be supported through OTA updates.
 - Download based on ROM API (available but not yet open)
 - Download based on stub after loading stub (larger single packet size, faster speed)
 - Compressed firmware download based on stub after loading stub (pushes zlib-compressed firmware)
 - Automatic flash encryption detection before flashing, preventing bricking caused by second download after encryption
+- **eFuse Burning (Experimental)**: Burn eFuses (e.g. encryption keys, disabling download mode) according to the configuration in `flasher_args.json` while flashing firmware. See section 3.5.
 
 ---
 
@@ -53,7 +54,7 @@ The main interface after booting has four options:
 - **Flash** — Select a firmware project and start flashing
 - **Files** — Browse stored firmware projects
 - **U-Disk** — Enter U-disk mode to connect to computer for file transfer
-- **Settings** — Adjust screen brightness, buzzer, language, etc.
+- **Settings** — Adjust buzzer, language, download baud rate, etc.
 
 Use **【Up】** and **【Down】** to move the cursor, and **【Confirm】** to enter the corresponding function.
 
@@ -130,6 +131,115 @@ Compressed firmware JSON:
 2. Long press **【Confirm】** on the device to exit U-disk mode, and the screen returns to the main menu.
 3. Now you can see the newly imported project in the **【Files】** or **【Flash】** menu.
 
+### 3.5 eFuse Burn Configuration (Experimental)
+
+> **Warning**: eFuses are one-time programmable (OTP). Burning is **irreversible**, and an incorrect configuration can permanently render a chip unusable. This feature is experimental — validate it thoroughly on sacrificial boards before using it in production.
+
+Add an optional `efuse` section to the project's `flasher_args.json` to burn eFuses together with the firmware:
+
+```json
+{
+  "flash_files": {
+    "0x0": "bootloader/bootloader.bin",
+    "0x60000": "esp-at.bin"
+  },
+  "efuse": {
+    "chips": ["esp32s3"],
+    "burn": [
+      {
+        "block": "BLOCK_USR_DATA",
+        "offset": 0,
+        "data": "a1b2c3d4",
+        "comment": "device config v3",
+        "burn_after_flash": false
+      }
+    ]
+  }
+}
+```
+
+Field description:
+
+| Field | Required | Description |
+|------|------|------|
+| `chips` | No | Chip model allowlist (e.g. `esp32s3`); burning is refused when the connected chip is not listed, preventing wrong-project mistakes |
+| `burn` | Yes | Array of burn items |
+| `block` | Yes | eFuse block name, same naming as espefuse (e.g. `BLOCK_USR_DATA`, `BLOCK_KEY0`, `BLOCK0`) |
+| `data` | Yes | Hex string of the bits to set (OR semantics — other already-burned bits are unaffected); at most 36 bytes, length must be a multiple of 4 |
+| `offset` | No | Byte offset inside the block (default 0, must be a multiple of 4) |
+| `comment` | No | Remark text, shown in logs only |
+| `burn_after_flash` | Yes | `false` = burn this item before writing flash; `true` = burn after flash is written and verified |
+
+Notes:
+
+- **No second confirmation**: in manual mode, selecting a project burns exactly what the configuration specifies — make sure the configuration is correct. The auto loop test (testdl) always skips eFuse burning.
+- **Idempotent**: if all requested bits are already burned, the item is skipped; re-burning the same project on the same board does not raise an error.
+- Byte order matches `espefuse burn_block_data`: bytes `[4i..4i+3]` form block word `i` (little-endian).
+- RS-coded blocks (all non-BLOCK0 blocks on ESP32-S2/S3/C3 and other newer chips) **do not allow appending to a non-empty block**; ESP32's 3/4-coded blocks are checked per 6-byte chunk. Write-protected blocks (WR_DIS) are refused with an error.
+- The device enforces the burn order: non-BLOCK0 blocks first, then ordinary BLOCK0 fields, and protection/download-disabling fields always last.
+
+> **Important BLOCK0 recommendation**: always set `"burn_after_flash": true` for BLOCK0 items (key purposes, `RD_DIS`/`WR_DIS` protection bits, `DIS_DOWNLOAD_MODE`, etc.). The enforced ordering only applies within a single burn phase and cannot protect across phases: if a BLOCK0 item burns before flash writing (`false`), its write-protect bits will make later items targeting those blocks fail, and download-disabling bits such as `DIS_DOWNLOAD_MODE` will cut the flashing channel before the firmware is even written.
+
+- Converting field names / key files / key purposes into block bitmaps must be done on the host side (a converter in MFProg-ESP-fw-tool is planned); the device only performs block-level burning.
+- ESP8266 does not support eFuse burning.
+
+#### Example: Burning a Host-Pregenerated Flash Encryption Key (ESP32-S3)
+
+This follows Espressif's official guide [Flash Encryption - Using a Host-generated Key](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/security/flash-encryption.html#pregenerated-flash-encryption-key), using ESP32-S3 with AES-128 (256-bit key):
+
+1. Generate the key file on a computer:
+
+   ```bash
+   idf.py secure-generate-flash-encryption-key my_flash_encryption_key.bin
+   ```
+
+2. **Byte-reverse** the key and convert it to a hex string (hardware byte-order requirement for XTS keys; espefuse `burn_key` does the same):
+
+   ```bash
+   $ python3 -c "print(open('my_flash_encryption_key.bin','rb').read()[::-1].hex())"
+   dd26da7be1b5420d868969a06954d9343284497f39b7d23c307095b8bad91005
+   ```
+
+   (The original key file in this example contains `0510d9bab89570303cd2b7397f49843234d95469a06989860d42b5e17bda26dd` — for demonstration only, do not use it in a real product.)
+
+3. Add the `efuse` section to the project's `flasher_args.json` (replace `data` with your own output from the previous step; the real demo value from this example is shown here):
+
+   ```json
+   {
+     "flash_files": {
+       "0x0": "bootloader/bootloader.bin",
+       "0x8000": "partition_table/partition-table.bin",
+       "0x10000": "app.bin"
+     },
+     "efuse": {
+       "chips": ["esp32s3"],
+       "burn": [
+         {
+           "block": "BLOCK_KEY0",
+           "data": "dd26da7be1b5420d868969a06954d9343284497f39b7d23c307095b8bad91005",
+           "comment": "flash encryption key (XTS_AES_128_KEY)",
+           "burn_after_flash": false
+         },
+         {
+           "block": "BLOCK0",
+           "data": "000080000100000000000004000000000000000000000000",
+           "comment": "KEY_PURPOSE_0=XTS_AES_128_KEY; WR_DIS[23]+RD_DIS[0] protect BLOCK_KEY0",
+           "burn_after_flash": true
+         }
+       ]
+     }
+   }
+   ```
+
+   Meaning of the BLOCK0 bitmap (ESP32-S3): `KEY_PURPOSE_0 = 4` (XTS_AES_128_KEY) in word2, `WR_DIS` bit 23 in word0 (write-protects BLOCK_KEY0), and `RD_DIS` bit 0 in word1 (read-protects BLOCK_KEY0). The device automatically burns protection bits last.
+
+4. In the ESP-IDF project, enable "Enable flash encryption on boot" via `menuconfig` → Security features, choose development or release mode, and rebuild.
+5. Flash the project with this device as usual. On first boot, the bootloader encrypts the flash in place (may take about a minute for large partitions) — **do not power off during this process**.
+
+> **ESP32 (classic) differences**: the flash encryption key block is `BLOCK1` (alias `flash_encryption`), and the same byte-reversal applies; if the chip's `CODING_SCHEME` is 3/4 (not the factory default, uncommon), the usable key block length is only 24 bytes.
+
+> **Note**: the key exists in plaintext in the JSON stored on the device — keep project files safe. For production, generating a unique key per device is recommended.
+
 ---
 
 ## 4. Use the Device to Flash
@@ -191,15 +301,20 @@ Select **【Settings】** in the main menu to adjust the following options:
 | Setting Item | Description |
 |--------|------|
 | Buzzer | Turn operation prompt tone on/off |
-| Language | Switch interface display language |
+| Language | Switch interface display language (takes effect after the device automatically reboots when exiting the settings page) |
 | BLE | Turn Bluetooth function on/off |
 | Download Baud Rate | Set the download baud rate for ESP flashing (115200 / 460800 / 1000000 / 2000000) |
+| Auto Enter Download | When enabled, the device automatically enters the flashing page on startup |
+| BLE PIN | Shows the 4-digit PIN used for BLE connections (read-only) |
+| Enter Bootloader | Reboot into Bootloader upgrade mode (see section 6) |
 
 Operation:
 - **【Up】** / **【Down】** to select setting item
 - **【Confirm】** to enter edit mode
 - In edit mode, **【Up】** / **【Down】** to switch option values
 - Press **【Confirm】** again to save, or long press **【Confirm】** to return to the main menu
+
+> **Note**: **【BLE PIN】** is read-only; **【Enter Bootloader】** is an action item — pressing **【Confirm】** immediately reboots the device into upgrade mode.
 
 > **Tip**: The default download baud rate is **1000000**. If connection or verification errors occur frequently during flashing, try lowering the baud rate (such as 460800 or 115200).
 
@@ -223,8 +338,10 @@ There are two ways to enter Bootloader upgrade mode:
 3. Reconnect power (plug in Type-C cable).
 4. Release the button after the screen displays the Bootloader screen.
 
-**Method 2: App State Restart**
-1. In normal boot state, long press the **【Confirm】（MID）** button on the home page.
+**Method 2: Restart via Settings Page**
+1. In normal boot state, enter the **【Settings】** page from the main menu.
+2. Select **【Enter Bootloader】** and press **【Confirm】**.
+3. The device automatically reboots into Bootloader mode.
 
 After entering Bootloader, the device will be recognized by the computer as a removable disk named **MFProgBL**.
 
@@ -239,3 +356,37 @@ After entering Bootloader, the device will be recognized by the computer as a re
 ---
 
 ## 7. FAQ and Troubleshooting
+
+### 7.1 Flashing Issues
+
+**Q: "Connection Timeout" or chip not recognized?**
+- Check whether TX/RX are swapped (flasher TX should connect to target board RX).
+- Check that EN, BOOT, and GND connections are secure.
+- Make sure the target board is powered normally.
+- Lower the download baud rate to 460800 or 115200 in **【Settings】** and try again.
+
+**Q: "Verification Failed"?**
+- Usually caused by unstable communication. Lower the download baud rate, shorten the wiring, and try again.
+- If the target chip already has flash encryption enabled and this is not the first flashing, the device will actively refuse a second download — this is normal brick-prevention protection.
+
+**Q: Unsupported chip model reported?**
+- Confirm the chip is in the supported list (see section 1). Some newer chip models require newer device firmware — upgrade the device first as described in section 6.
+
+### 7.2 File and U-Disk Issues
+
+**Q: Computer does not recognize the U-disk?**
+- Make sure you have entered **【U-Disk】** mode from the main menu, and use a Type-C cable that supports data transfer (some cables are charge-only).
+
+**Q: Project does not appear after copying, or files are corrupted?**
+- Eject the U-disk on the computer first, then long press **【Confirm】** on the device to exit U-disk mode, ensuring data is fully written before unplugging.
+
+### 7.3 System and Upgrade Issues
+
+**Q: Interface did not change after switching language?**
+- The language setting takes effect after a reboot. When you long press **【Confirm】** to exit the settings page, the device automatically reboots and applies the new language.
+
+**Q: How to enter Bootloader upgrade mode?**
+- Power on while holding the **【Confirm】（MID）** button, or select **【Enter Bootloader】** in **【Settings】**. See section 6.
+
+**Q: Device cannot boot after an interrupted upgrade?**
+- Power on again while holding the **【Confirm】（MID）** button to enter Bootloader, then drag a complete `.uf2` upgrade file into the `MFProgBL` disk to recover.
