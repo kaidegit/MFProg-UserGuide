@@ -236,6 +236,10 @@ This follows Espressif's official guide [Flash Encryption - Using a Host-generat
 4. In the ESP-IDF project, enable "Enable flash encryption on boot" via `menuconfig` → Security features, choose development or release mode, and rebuild.
 5. Flash the project with this device as usual. On first boot, the bootloader encrypts the flash in place (may take about a minute for large partitions) — **do not power off during this process**.
 
+> **This example follows the "key + plaintext firmware" flow**: firmware is written to flash as plaintext, and `SPI_BOOT_CRYPT_CNT` is set automatically by the bootloader during first-boot in-place encryption — that is why the bitmap above does not include it. Espressif also supports a "host pre-encrypted ciphertext" flow (pre-encrypting with `espsecure.py` and pre-burning `SPI_BOOT_CRYPT_CNT`), which targets raw-write channels such as gang programmers or JTAG — **do not flash `espsecure.py`-encrypted ciphertext with this device** (see below).
+>
+> **About re-flashing**: after first-boot encryption completes, re-flashing **plaintext** firmware with this device is safe — when the device detects flash encryption is enabled, it automatically switches to encrypted writes (plaintext is sent and encrypted on the chip with the burned key before writing, same as esptool). This requires 16-byte-aligned write addresses (32 bytes and stub mode for classic ESP32), and that neither `DIS_DOWNLOAD_MANUAL_ENCRYPT` (already burned → the device refuses with an error) nor download-disabling bits such as `DIS_DOWNLOAD_MODE` have been burned. **Do not** flash host-pre-encrypted ciphertext: the chip would encrypt the received data again, and double encryption makes the firmware unbootable.
+
 > **ESP32 (classic) differences**: the flash encryption key block is `BLOCK1` (alias `flash_encryption`), and the same byte-reversal applies; if the chip's `CODING_SCHEME` is 3/4 (not the factory default, uncommon), the usable key block length is only 24 bytes.
 
 > **Note**: the key exists in plaintext in the JSON stored on the device — keep project files safe. For production, generating a unique key per device is recommended.
@@ -367,7 +371,7 @@ After entering Bootloader, the device will be recognized by the computer as a re
 
 **Q: "Verification Failed"?**
 - Usually caused by unstable communication. Lower the download baud rate, shorten the wiring, and try again.
-- If the target chip already has flash encryption enabled and this is not the first flashing, the device will actively refuse a second download — this is normal brick-prevention protection.
+- If the target chip already has flash encryption enabled, the device automatically switches to encrypted-write mode and re-flashing plaintext firmware is still safe; only when the chip has protection bits such as `DIS_DOWNLOAD_MANUAL_ENCRYPT` burned (production-disabled encrypted download) will the device refuse to flash and report an error — this is normal brick-prevention protection.
 
 **Q: Unsupported chip model reported?**
 - Confirm the chip is in the supported list (see section 1). Some newer chip models require newer device firmware — upgrade the device first as described in section 6.
